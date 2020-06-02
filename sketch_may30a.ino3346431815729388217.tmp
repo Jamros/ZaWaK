@@ -1,0 +1,334 @@
+//-------------------------INCLUDE-------------------------------------------------
+
+#include "HX711.h"
+#include <U8g2lib.h>
+
+
+
+// HX711 circuit wiring
+const int LOADCELL_DOUT_PIN = 4;
+const int LOADCELL_SCK_PIN = 15;
+HX711 scale;
+//const float calibrationValue = -126.06;
+const float calibrationValue = -1.0;
+
+//const int ButtonSelect = 5;
+//const int ButtonRight = 18;
+//const int ButtonLeft = 19;
+
+
+//OLED
+U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, 
+                                          /* clock=*/ SCL, 
+                                          /* data=*/ SDA, 
+                                          /* reset=*/ U8X8_PIN_NONE);   // All Boards without Reset of the Display
+const char *string_list = 
+  "Piersc z kurczaka\n"
+  "Ruz\n"
+  "Makaron\n"
+  "Pomidor\n"
+  "Ogorek\n"
+  "Szynka\n"
+  "Kapusta\n"
+  "Bulka\n"
+  "Chleb\n"
+  "Malina";
+uint8_t current_selection = 0;
+
+//const int led1 = 2;
+
+//INTERRUPTPIN FOR BUTTON
+const int interruptPin1 = 5;
+const int interruptPin2 = 18;
+const int interruptPin3 = 19;
+const int led1 = 2;
+//KOLEJKA
+QueueHandle_t serialQueue1;
+QueueHandle_t serialQueue2;
+
+//SEMAFOR
+//SemaphoreHandle_t sem_1;
+
+TaskHandle_t Task1;
+
+void interruptHandler() { 
+  BaseType_t sHigherPriorityTaskWoken = pdFALSE;
+  int ButtonRight;
+    /* 'Give' the semaphore to unblock the button task. */
+    xQueueSend(serialQueue2,&ButtonRight,portMAX_DELAY);
+    
+    /* If giving the semaphore unblocked a task, and the unblocked task has a
+    priority that is higher than the currently running task, then
+    sHigherPriorityTaskWoken will have been set to pdTRUE.  Passing a pdTRUE
+    value to portYIELD_FROM_ISR() will cause this interrupt to return directly
+    to the higher priority unblocked task. */
+    portYIELD_FROM_ISR(  );
+}
+
+void Button1_code( void * pvParameters )
+{
+  while(1) { 
+        while(xQueueReceive(serialQueue2,&ButtonRight,portMAX_DELAY) == pdTRUE){
+         if (digitalRead(led1) == LOW)
+         {
+          digitalWrite(led1, HIGH);
+         }
+         else
+         {
+          digitalWrite(led1, LOW);
+         }
+        }
+  }
+}
+
+void ButtonRight_code ( void * pvParameters )
+{
+     int ButtonRight;
+  while(xQueueReceive(serialQueue2,&ButtonRight,portMAX_DELAY) == pdTRUE){
+       
+    digitalWrite(led1, HIGH);
+    vTaskDelay((200L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+    digitalWrite(led1, LOW);
+    vTaskDelay((200L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+  } 
+}
+
+
+
+void setup() {
+  pinMode(led1,OUTPUT);
+  digitalWrite(led1, LOW);
+  pinMode(interruptPin1, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin1), interruptHandler, FALLING);
+  pinMode(interruptPin2, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin2), interruptHandler, FALLING);
+  pinMode(interruptPin3, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin3), interruptHandler, FALLING);
+  
+  
+  Serial.begin(115200);
+  
+  while (!Serial) {
+      ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
+    }
+    u8g2.begin();
+
+//------------------------------KOLEJEKA----------------------------------------------------
+
+  serialQueue1 = xQueueCreate(16, sizeof(float));
+  if(serialQueue1 == NULL)
+  {
+    Serial.println("Failed to createQueeue1");
+    while(true);
+  }
+
+  serialQueue2 = xQueueCreate(16, sizeof(int));
+  if(serialQueue2 == NULL)
+  {
+    Serial.println("Failed to createQueeue2");
+    while(true);
+  }
+
+//------------------------------SEMAFOR-----------------------------------------------------
+
+/*
+if ( sem_1 == NULL )  // Check to confirm that the Serial Semaphore has not already been created.
+  {
+    sem_1 = xSemaphoreCreateBinary();  // Create a mutex semaphore we will use to manage the Serial Port
+    if ( ( sem_1 ) != NULL )
+      xSemaphoreGive( ( sem_1 ) );  // Make the Serial Port available for use, by "Giving" the Semaphore.
+  }
+
+*/
+
+//-------------------------HX711---------------------------------------------------
+  
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  
+  Serial.println("Initializing the scale");
+
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+
+  Serial.println("Before setting up the scale:");
+  Serial.print("read: \t\t");
+  Serial.println(scale.read());      // print a raw reading from the ADC
+
+  Serial.print("read average: \t\t");
+  Serial.println(scale.read_average(20));   // print the average of 20 readings from the ADC
+
+  Serial.print("get value: \t\t");
+  Serial.println(scale.get_value(5));   // print the average of 5 readings from the ADC minus the tare weight (not set yet)
+
+  Serial.print("get units: \t\t");
+  Serial.println(scale.get_units(5), 1);  // print the average of 5 readings from the ADC minus tare weight (not set) divided
+            // by the SCALE parameter (not set yet)
+
+  scale.set_scale(2280.f);                      // this value is obtained by calibrating the scale with known weights; see the README for details
+  scale.tare();               // reset the scale to 0
+
+  Serial.println("After setting up the scale:");
+
+  Serial.print("read: \t\t");
+  Serial.println(scale.read());                 // print a raw reading from the ADC
+
+  Serial.print("read average: \t\t");
+  Serial.println(scale.read_average(20));       // print the average of 20 readings from the ADC
+
+  Serial.print("get value: \t\t");
+  Serial.println(scale.get_value(5));   // print the average of 5 readings from the ADC minus the tare weight, set with tare()
+
+  Serial.print("get units: \t\t");
+  Serial.println(scale.get_units(5), 1);        // print the average of 5 readings from the ADC minus tare weight, divided
+            // by the SCALE parameter set with set_scale
+
+  Serial.println("Readings:");
+
+
+
+
+
+
+
+//---------------------------TASKI----------------------------------------------------------
+/*
+ xTaskCreatePinnedToCore(
+                    Task1code,   
+                    "Task1",     
+                    8192,     
+                    NULL,      
+                    1,       
+                    &Task1,     
+                    0);                  
+*/
+ xTaskCreatePinnedToCore(
+      HX711_code, /* Функция, содержащая код задачи */
+      "HX711_Task", /* Название задачи */
+      8192, /* Размер стека в словах */
+      NULL, /* Параметр создаваемой задачи */
+      2, /* Приоритет задачи */
+      NULL, /* Идентификатор задачи */
+      1); /* Ядро, на котором будет выполняться задача */
+
+ xTaskCreatePinnedToCore(
+      OLED_code, 
+      "OLED_Task", 
+      8192, 
+      NULL, 
+      1, 
+      NULL, 
+      0); 
+
+ xTaskCreatePinnedToCore(
+      Button1_code, 
+      "BUTTON_Task", 
+      8192, 
+      NULL, 
+      1, 
+      NULL, 
+      0); 
+ xTaskCreatePinnedToCore(
+      ButtonRight_code, 
+      "BUTTONRIGHT_Task", 
+      8192, 
+      NULL, 
+      1, 
+      NULL, 
+      0); 
+ 
+   
+ 
+}
+
+//-------------------------TASK HX711---------------------------------------------
+
+static void HX711_code(void* parameter) {
+    Serial.print("HX711_code running on core ");
+           //  "Задача Task1 выполняется на ядре "
+  Serial.println(xPortGetCoreID());
+  for(;;)
+  {
+  float weight;
+  Serial.print("one reading:\t");
+  weight = scale.get_units();
+  Serial.println(weight, 1);
+  //Serial.print("\t| average:\t");
+  //Serial.println(scale.get_units(10), 1);
+  xQueueSend(serialQueue1,&weight,portMAX_DELAY);
+  scale.power_down();              // put the ADC in sleep mode
+  vTaskDelay((200L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+  scale.power_up();
+}
+}
+
+//-------------------------TASK OLED----------------------------------------------
+
+void OLED_code(void* parameter) {
+
+  float fCurrentWeight;
+  while(xQueueReceive(serialQueue1,&fCurrentWeight,portMAX_DELAY) == pdTRUE){
+      char charVal[10]; 
+      dtostrf(fCurrentWeight, 4, 3, charVal);
+      
+      u8g2.clearBuffer();          // clear the internal memory
+      u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font   
+      u8g2.drawStr(44,18,charVal);  // write something to the internal memory 
+      u8g2.drawStr(44,8,"ZaWaK");  // write something to the internal memory
+      u8g2.drawStr(0,18,"Waga: ");  // write something to the internal memory
+      u8g2.drawStr(0,28,"Produkt: ");  // write something to the internal memory
+      u8g2.drawStr(0,38,"Weglowodany: ");
+      u8g2.drawStr(0,48,"Tluszcze: ");
+      u8g2.drawStr(0,58,"Bialko: ");
+      u8g2.sendBuffer();          // transfer internal memory to the display
+    }
+}
+
+
+
+
+
+
+void Task1code( void * pvParameters ){
+  Serial.print("Task1 running on core ");
+           //  "Задача Task1 выполняется на ядре "
+  Serial.println(xPortGetCoreID());
+
+  for(;;){
+    digitalWrite(led1, HIGH);
+    vTaskDelay((200L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+    digitalWrite(led1, LOW);
+    vTaskDelay((200L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+  } 
+}
+
+
+
+//---------------------------MENU function---------------------------------------------------
+
+void Menu() {
+
+  current_selection = u8g2.userInterfaceSelectionList(
+    "MENU",
+    current_selection, 
+    string_list);
+
+  if ( current_selection == 0 ) {
+    u8g2.userInterfaceMessage(
+  "Nothing selected.", 
+  "",
+  "",
+  " ok ");
+  } else {
+    u8g2.userInterfaceMessage(
+  "Selection:", 
+  u8x8_GetStringLineStart(current_selection-1, string_list ),
+  "",
+  " ok \n cancel ");
+  }
+}
+
+
+
+
+
+void loop() {
+}
