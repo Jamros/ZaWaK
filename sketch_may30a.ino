@@ -5,6 +5,28 @@
 #include "HX711.h"
 #include <U8g2lib.h>
 
+#ifdef ESP32
+  #include <WiFi.h>
+  #include <HTTPClient.h>
+#else
+  #include <ESP8266WiFi.h>
+  #include <ESP8266HTTPClient.h>
+  #include <WiFiClient.h>
+#endif
+
+#include <ArduinoJson.h>
+
+//---------------------------------------------------------------------------------
+//----------------------JSON Parametrs--------------------------------------------
+//---------------------------------------------------------------------------------
+
+const size_t capacity = JSON_ARRAY_SIZE(10) + 10*JSON_OBJECT_SIZE(1) + 190;
+//---------------------------------------------------------------------------------
+//----------------------Wi-Fi Parametrs--------------------------------------------
+//---------------------------------------------------------------------------------
+
+const char* ssid = "AndroidAP3348";
+const char* password = "gase4288";
 //---------------------------------------------------------------------------------
 //----------------------HX711 circuit wiring---------------------------------------
 //---------------------------------------------------------------------------------
@@ -61,6 +83,7 @@ const int ButtonO = 4;
 
 QueueHandle_t serialQueue1;
 QueueHandle_t serialQueue2;
+QueueHandle_t WiFiQueue;
 
 //----------------------------------------------------------------------------------
 //-------------------INICJALIZACJA SEMAFORU-----------------------------------------
@@ -130,47 +153,50 @@ void Start(float fCurrentWeight1) {
 //------------------------FUNKCJA KLIK MENU-----------------------------------------
 //----------------------------------------------------------------------------------
 
-void KlikPrzycisk (float fCurrentWeight1,boolean &StartMenu,boolean &MenuWybranyProdukt){
+int KlikPrzycisk (float fCurrentWeight1,boolean &StartMenu,boolean &MenuWybranyProdukt){
   
 static int i=0;
 int queueValue;
 
-u8g2.clearDisplay();
+u8g2.clearBuffer();
 u8g2.setFont(u8g2_font_ncenB10_tr);
 u8g2.drawStr(10,20,string_list[i]);
 u8g2.sendBuffer();
 if (xQueueReceive(serialQueue2,&queueValue,(TickType_t)10) == pdTRUE){
 
   if (queueValue == ButtonRight){
-              i++;
+              i++; 
             }
   else if (queueValue == ButtonLeft){
               i--;
             }
   else if (queueValue == ButtonOnOff){
-          StartMenu = true;  
+          StartMenu = true;
+          MenuWybranyProdukt = false;  
   }
   else if (queueValue == ButtonSelect){
-          MenuWybranyProdukt = true;  
+          MenuWybranyProdukt = true;
+           
   }
 }
+return i; 
 }
 
 //----------------------------------------------------------------------------------
 //-------------------------FUNKCJA WYBRANEGO PRODUKTU-------------------------------
 //----------------------------------------------------------------------------------
 
-void WybranyProdukt (float fCurrentWeight1, boolean &StartMenu){
+void WybranyProdukt (float fCurrentWeight1, boolean &StartMenu, int wybor,boolean &MenuWybranyProdukt){
 
   char charVal[10]; 
   dtostrf(round(abs(fCurrentWeight1)), 4, 0, charVal);
-  u8g2.clearDisplay();
+  u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB08_tr);         
   u8g2.drawStr(44,18,charVal);               
   u8g2.drawStr(44,8,"ZaWaK");               
   u8g2.drawStr(0,17,"Waga: ");  
   u8g2.drawStr(0,26,"Produkt: ");
-                         
+  u8g2.drawStr(50,26, string_list[wybor]);                      
   u8g2.drawStr(0,35,"Kalorie: "); 
   u8g2.drawStr(0,44,"Weglowodany: ");
   u8g2.drawStr(0,53,"Tluszcze: ");
@@ -179,11 +205,15 @@ void WybranyProdukt (float fCurrentWeight1, boolean &StartMenu){
 
 int queueValue;
 if (xQueueReceive(serialQueue2,&queueValue,(TickType_t)10) == pdTRUE){
-    if (queueValue == ButtonOnOff){
-          StartMenu = true;
+  if (queueValue == ButtonOnOff){
+         MenuWybranyProdukt = false; 
+         StartMenu = false;
+         
+
+  }
 }
-}
-}
+} 
+
   
 
 
@@ -226,6 +256,13 @@ void setup() {
   if(serialQueue2 == NULL)
   {
     Serial.println("Failed to createQueeue2");
+    while(true);
+  }
+
+  WiFiQueue = xQueueCreate(30, sizeof(char));
+  if(WiFiQueue == NULL)
+  {
+    Serial.println("Failed to WiFiQueue");
     while(true);
   }
   
@@ -298,12 +335,14 @@ static void HX711_code(void* parameter) {
 
 void OLED_code(void* parameter) {
  static float fCurrentWeight1 = 0.0;
- boolean StartMenu = true;
- boolean MenuWybranyProdukt = false;
+ static boolean StartMenu = true;
+ static boolean MenuWybranyProdukt = false;
+ static int wybor;
  while (1){
   
 if (StartMenu && !MenuWybranyProdukt) 
 {
+ Serial.println("1");
   Start(fCurrentWeight1);
     int queueValue;
     if (xQueueReceive(serialQueue2,&queueValue,(TickType_t)10) == pdTRUE){
@@ -313,16 +352,60 @@ if (StartMenu && !MenuWybranyProdukt)
 }
 else if(!StartMenu && !MenuWybranyProdukt)
 {
-  KlikPrzycisk(fCurrentWeight1,StartMenu, MenuWybranyProdukt);
+   Serial.println("2");
+  wybor = KlikPrzycisk(fCurrentWeight1,StartMenu, MenuWybranyProdukt);
 }
 else if (MenuWybranyProdukt) {
-  WybranyProdukt(fCurrentWeight1, StartMenu);
+   Serial.println("3");
+  WybranyProdukt(fCurrentWeight1, StartMenu, wybor, MenuWybranyProdukt);
 }
 xQueueReceive(serialQueue1,&fCurrentWeight1,(TickType_t)10);
 
 }
 
 }
+
+//--------------------------------------------------------------------------------
+//-------------------------TASK WI-FI----------------------------------------------
+//--------------------------------------------------------------------------------
+void WiFi_Code(void* pvParametrs)
+{
+    char* product_name;
+    if (xQueueReceive(WiFiQueue,&product_name,(TickType_t)10) == pdTRUE){
+      WiFi.begin(ssid, password);
+      while (WiFi.status() != WL_CONNECTED) 
+      {
+        vTaskDelay((1000L * configTICK_RATE_HZ) / 1000L); // wait for 200ms
+        Serial.print("Connecting..");
+      }
+      HTTPClient http;  //Declare an object of class HTTPClient
+      char* ServerName = "http://server194717.nazwa.pl/ZaWaK/get-json.php?api_key=tPmAT5Ab3j7F9&product_name=";
+      strncat(ServerName,product_name,114);
+      http.begin(ServerName);  //Specify request destination
+      int httpCode = http.GET();     //Send the request                                                           
+  
+      if (httpCode > 0) { //Check the returning code
+        String payload = http.getString();   //Get the request response payload
+        Serial.println(payload);                     //Print the response payload
+  
+        DynamicJsonDocument doc(capacity);
+     
+        // Deserialize the JSON document
+        DeserializationError error = deserializeJson(doc, payload);
+      
+        // Test if parsing succeeds.
+        if (error) {
+          Serial.print(F("deserializeJson() failed: "));
+          Serial.println(error.c_str());
+          return;
+        }
+      }
+  
+      http.end();   //Close connection
+
+    } 
+    
+  }
 void loop()
 {
   
